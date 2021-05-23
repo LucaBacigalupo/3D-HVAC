@@ -1,0 +1,198 @@
+#include <ESP8266WiFi.h>
+#include <PubSubClient.h>
+#include <dht.h>
+#include <CCS811.h>
+#include <Servo.h>
+
+/*
+ ESP8266 Pin out  https://randomnerdtutorials.com/esp8266-pinout-reference-gpios/
+ DHT11 Pin out/Basic Code https://create.arduino.cc/projecthub/arcaegecengiz/using-dht11-b0f365
+ CCS811 Pin out/Basic Code https://wiki.keyestudio.com/KS2002_EASY_Plug_CCS811_CO2_Air_Quality_Sensor(Black_and_Eco-friendly)
+ I2C Scanner https://playground.arduino.cc/Main/I2cScanner/
+
+    **** MQQTT Commands *****
+
+    - MQTT_Public Have Passowrd
+      mosquitto_pub -h hostlocal -u mqtt_username -P mqtt_password -t "topic" -m "Hello"
+    - MQTT_Subscribe Have Passowrd
+      mosquitto_sub -h hostlocal  -u mqtt_username -P mqtt_password -t "topic"
+    ---------------------------------------------------------------
+    - MQTT_Public No Passowrd
+      mosquitto_pub -h hostlocal -t "topic" -m "Hello"
+    - MQTT_Subscribe No Passowrd
+      mosquitto_sub -h hostlocal -t "topic"
+    ================================================================
+    -h hostlocal (IP adress raspberry pi)
+    -u username MQTT
+    -P password MQTT
+    -m message (message you want to sent)
+
+
+    **** ESP8211 Connections - ESP8266 PIN out as reference *****
+
+    - DHT11
+    DATA: ESP D0
+    -CCS811
+    SCL: ESP D1
+    SDA: ESP D2
+    WAKE: GND
+    - Fan
+    DATA: ESP D5
+      > TRANSISTOR CONNECTION https://hacksterio.s3.amazonaws.com/uploads/attachments/527211/dsc_0280_qGPUj4c7cU.JPG
+      Collector: GND of FAN
+      Base: ESP D5
+      Emmiter: GND to ESP
+    - Servo
+    DATA: ESP D6
+*/
+
+
+dht DHT;
+CCS811 sensor;
+
+#define DHT11_PIN 16 // PIN ESP8266 = D0
+Servo myservo;
+
+int Fan=14; // PIN ESP8266 FAN = D5
+int pos = 0; // Initial Position for Servo
+const int TEMP_THRESHOLD_UPPER = 25; // upper threshold of temperature
+const int TEMP_THRESHOLD_LOWER = 20; // lower threshold of temperature
+const int CO2_THRESHOLD_UPPER = 1000; // upper threshold of temperature
+const int CO2_THRESHOLD_LOWER = 500; // lower threshold of temperature
+float tempSense;
+float humSense;
+float TVOCSense;
+float CO2Sense;
+
+
+const char* ssid = "ATTbWy4xEa";        // wifi ssid
+const char* password = "f8trf5qa4hje";  // wifi password
+const char* mqttServer = "192.168.1.209"; // IP address Raspberry Pi
+const int mqttPort = 1883;                // MQTT Port #
+const char* mqttUser = "CARBON";         // MQQTT User
+const char* mqttPassword = "CARBON";     // MQTT Password
+
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+unsigned long previousMillis = 0;
+unsigned long interval = 10000;
+
+void setup() {
+
+  Serial.begin(115200); // Baud Rate
+  myservo.attach(12); // Servo PIN = D6
+  pinMode(Fan, OUTPUT); // Fan Pin Out
+  Serial.println("System Checks: ");
+  Serial.println("Fans Start");
+  while(sensor.begin() != 0){
+    Serial.println("failed to init chip, please check if the chip connection is fine");
+    delay(1000); } // Checking connection of CCS811 every 1sec
+  sensor.setMeasCycle(sensor.eCycle_250ms);
+
+  WiFi.begin(ssid, password); // WiFi connection
+
+  int i = 0;
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.println("Connecting to WiFi..");
+    Serial.print(++i); Serial.print(' ');
+  }
+  Serial.println("Connected to the WiFi network");
+  Serial.println('\n');
+  Serial.println("Connection established!");
+  Serial.print("IP address: ");
+  Serial.println(WiFi.localIP());
+
+  client.setServer(mqttServer, mqttPort);
+  client.setCallback(callback);
+
+  while (!client.connected()) {
+    Serial.println("Connecting to MQTT...");
+
+    if (client.connect("ESP8266Client", mqttUser, mqttPassword )) {
+    Serial.println("connected!");
+    Serial.println(" ");
+    delay(3000);
+
+    } else {
+      Serial.print("failed with state ");
+      Serial.print(client.state());
+      delay(2000);
+    }
+  }
+}
+
+void callback(char* topic, byte* payload, unsigned int length) {
+  // Assurance of message sent to topic in MQTT
+  Serial.print("Message arrived in topic: ");
+  Serial.println(topic);
+
+  Serial.print("Message: ");
+  for (int i = 0; i < length; i++) {
+    Serial.print((char)payload[i]);
+  }
+  Serial.println();
+  Serial.println("-----------------------");
+}
+
+void loop() {
+    int chk = DHT.read11(DHT11_PIN);
+    tempSense = DHT.temperature; // Reading temp
+    humSense = DHT.humidity; // Reading Hum
+    CO2Sense = sensor.getCO2PPM(); // Reading CO2
+    TVOCSense = sensor.getTVOCPPB(); // Reading TVOC
+      client.loop();
+      unsigned long currentMillis = millis();
+
+      if (currentMillis - previousMillis >= interval) {
+      // save the last time you updated the DHT values
+      previousMillis = currentMillis;
+
+      if(!isnan(tempSense)&&!isnan(humSense)){
+        // Display Serial Monitor
+        Serial.println("Temperature (C): " +String(tempSense));
+        Serial.println("Humidity: (%): " +String(humSense));
+        Serial.println("CO2 (ppm): " +String(CO2Sense));
+        Serial.println("TVOC (ppb): " +String(TVOCSense));
+        Serial.println(" ");
+
+        // FAN ACTUATION START
+
+        // inbalance of Air Balance
+        if(tempSense>=28 || CO2Sense >=800) { // Paramaters to change Actuation
+            digitalWrite(Fan , HIGH);        // turn on fan
+            Serial.println("Serious inbalance of air detected!!!");
+            pos=90;                          // Set Vent Postion to 90 degrees
+            myservo.write(pos);              // tell servo to go to position in variable 'pos'
+            Serial.print("Vent Angle :");
+            Serial.println(pos);
+            Serial.println(" ");
+            delay(15);
+
+          // Normal Air Balance
+          } else {
+            digitalWrite(Fan, LOW);           // turn off fan
+             Serial.println("Normal Balance of Air");
+              pos=-90;                        // Set Vent Postion to -90 degrees
+              myservo.write(pos);              // tell servo to go to position in variable 'pos'
+              Serial.print("Vent Angle: ");
+              Serial.println(pos);
+              Serial.println(" ");
+              delay(15);                       // waits 15ms for the servo to reach the position
+            }
+
+          } else {
+              Serial.println("Data is not ready!");
+              delay(5000);
+              }
+          // FAN ACTUATION END
+
+        // Display on MQTT Server
+        String toSend = "Temperature(C): " + String(tempSense) + ", Humidity(%) :" +String(humSense) + ", CO2 (ppm): " +String(CO2Sense) + ", TVOC (ppb): " +String(TVOCSense);
+        client.publish("room2",toSend.c_str()); // Sends Message
+        client.subscribe("room2"); // Receives Message
+        delay (1000);
+      }
+
+} // End of Program
