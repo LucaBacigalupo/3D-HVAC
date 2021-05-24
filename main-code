@@ -171,7 +171,7 @@ void loop() {
             delay(15);
 
           // Normal Air Balance
-          } else {
+          /*} else {
             digitalWrite(Fan, LOW);           // turn off fan
              Serial.println("Normal Balance of Air");
               pos=-90;                        // Set Vent Postion to -90 degrees
@@ -182,7 +182,7 @@ void loop() {
               delay(15);                       // waits 15ms for the servo to reach the position
             }
 
-          } else {
+          */} else {
               Serial.println("Data is not ready!");
               delay(5000);
               }
